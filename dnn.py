@@ -12,11 +12,12 @@ class model():
     """
     全连接神经网络模型
     """
-    def __init__(self,learn_rate=0.05, layerStructure=(3,1), activation_func="relu", o_activation_func="softmax",
+    def __init__(self,learn_rate=0.03, layerStructure=[3,1],dropout_rate=None, activation_func="relu", o_activation_func="softmax",
             loss_func="crossEntropy", regularization="L2", regularization_rate=0.03, optimizer="SGD"):
         """
         :param learn_rate:学习率
         :param layerStructure: 网络结构，如两层结构(第一层三个神经元，第二层一个)==>[3,1]
+        :param dropout_rate: dropout概率，每个隐藏层对应的dropout概率(使用dropout后，损失函数不再有意义)==>[0.2,0]
         :param activation_func: 隐藏层激活函数，可选：relu、sigmoid、tanh
         :param o_activation_func:  输出层激活函数，可选：softmax、sigmoid
         :param loss_func: 损失函数，可选：crossEntropy、mse
@@ -25,6 +26,7 @@ class model():
         """
         self.loss = []
         self.layers_num = len(layerStructure)
+        self.dropout_rate = dropout_rate if dropout_rate!= None else [0]*self.layers_num
         self.learn_rate = learn_rate
         self.layerStructure = layerStructure
         self.activation_func = activation_func
@@ -40,9 +42,9 @@ class model():
         for n in range(len(layerStructure)):
             if n+1 < len(layerStructure):
                 self.w.append(nd.random([layerStructure[n], layerStructure[n+1]]))
-            self.b.append(nd.random([1, layerStructure[n]]))
+            self.b.append(nd.rand(1, layerStructure[n]))
 
-    def __activation_f(self,activation,z):
+    def __activation_f(self,activation,z,dropout=0):
         """
         激活函数
         :param activation:
@@ -50,32 +52,35 @@ class model():
         :return:
         """
         a = z
+        #根据dropout概率随机决定该层哪些神经元需要dropout
+        d = np.random.rand(z.shape[0], z.shape[1])>= dropout
+
+
         if activation.lower() == "relu":
             a[a < 0] = 0
             dg = a.copy()
             dg[dg > 0] = 1
-            return {"a":a, "dg":dg}
-        if activation.lower() == "sigmoid":
+        elif activation.lower() == "sigmoid":
             a = 1/(1+np.exp(-a))
             dg = a*(1-a)
-            return {"a":a, "dg":dg}
-        if activation.lower() == "tanh":
+        elif activation.lower() == "tanh":
             m = np.exp(a)
             n = np.exp(-1*a)
             a = (m-n)/(m+n)
             dg = 1 - a*a
-            return {"a": a, "dg": dg}
-        if activation.lower() == "softmax":
+        else: #activation.lower() == "softmax"
             a = np.exp(a)
             b = np.sum(a, axis=1, keepdims=True)
             a = a/b
             dg = a * (1 - a)
-            return {"a": a, "dg": dg}
 
+        a = a * d / (1 - dropout)
+        dg = dg * d / (1 - dropout)
+        return {"a": a, "dg": dg}
 
     def __loss_f(self,y_hat,y_true):
         """
-        损失函数
+        损失函数(使用dropout后，损失函数不再具有意义，此时的损失函数很不平稳，这是因为使用dropout后，每次计算损失函数时所对应的网结构都不同)
         :param y_hat:
         :param y_true:
         :return:
@@ -88,41 +93,35 @@ class model():
             loss = np.sum(np.power(y_hat - y_true, 2))/(2*y_hat.shape[0])
             dz_hat = (y_hat - y_true)*self.dg[-1]
 
-        # if self.regularization == "none":
-        #     pass
-        # elif self.regularization == "L1":
-        #     w_count = 0
-        #     mean = 0
-        #     for w in self.w:
-        #         mean += np.sum(np.abs(w))
-        #         w_count += w.shape[0] * w.shape[1]
-        #     mean = mean / w_count
-        #     loss = loss + mean*self.regularization_rate
-        # elif self.regularization == "L2":
-        #     w_count = 0
-        #     mean2 = 0
-        #     for w in self.w:
-        #         mean2 += np.sum(np.power(w, 2))
-        #         w_count += w.shape[0] * w.shape[1]
-        #     mean2 = mean2 / w_count
-        #     loss = loss + mean2*self.regularization_rate
+        loss_w = 0
+        if self.regularization == "none":
+            pass
+        elif self.regularization == "L1":
+            for w in self.w:
+                loss_w += np.sum(np.abs(w))
+        elif self.regularization == "L2":
+            for w in self.w:
+                loss_w += np.sum(np.power(w, 2))
+        loss_w = loss_w*self.regularization_rate/y_hat.shape[0]
+        loss = loss + loss_w
 
         return {"loss": loss, "dz_hat": dz_hat}
 
 
-    def __regularization_f(self):
+    def __regularization_f(self,m):
         """
         正则化
+        :param m: 样本数
         :return:
         """
         if self.regularization == "none":
             pass
         elif self.regularization == "L1":
             for i in range(len(self.dw)):
-                self.dw[i] += np.abs(self.regularization_rate)
+                self.dw[i] += np.abs(self.regularization_rate)/m
         elif self.regularization == "L2":
             for i in range(len(self.dw)):
-                self.dw[i] += np.abs(self.regularization_rate * self.dw[i])
+                self.dw[i] += np.abs(self.regularization_rate * self.dw[i])/m
 
 
     def __optimizer_f(self):
@@ -165,7 +164,7 @@ class model():
         """
         m = train_x.shape[0]  #样本数
         nd = np.random.RandomState(14)
-        self.w.insert(0,nd.random([train_x.shape[1], self.layerStructure[0]])*0.01)  #添加第一层网络的训练参数w
+        self.w.insert(0,nd.rand(train_x.shape[1], self.layerStructure[0])*0.01)  #添加第一层网络的训练参数w
         for epoch in range(epoch):      #训练轮数
             self.z = []                 #z = x * w.T
             self.a = []                 #a = g(z)
@@ -176,18 +175,20 @@ class model():
 
             ###前向传播###
             z = np.dot(train_x, self.w[0]) + self.b[0]
-            aa = self.__activation_f(activation=self.activation_func,z=z)
+            aa = self.__activation_f(activation=self.activation_func, z=z, dropout=self.dropout_rate[0])
             self.z.append(z)
             self.a.append(aa["a"])
             self.dg.append(aa["dg"])
             for l in range(1,self.layers_num):
                 if l < self.layers_num - 1:
                     activation = self.activation_func
+                    dropout = self.dropout_rate[l]
                 # 输出层
                 elif l == self.layers_num - 1:
                     activation = self.o_activation_func
+                    dropout = 0
                 z = np.dot(self.a[l-1], self.w[l]) + self.b[l]
-                aa = self.__activation_f(activation=activation, z=z)
+                aa = self.__activation_f(activation=activation, z=z, dropout=dropout)
                 self.z.append(z)
                 self.a.append(aa["a"])
                 self.dg.append(aa["dg"])
@@ -209,10 +210,9 @@ class model():
 
             ###参数更新###
             for i in range(self.dw.__len__()):
-                self.__regularization_f() #正则化
+                self.__regularization_f(m) #正则化
                 self.w[i] -= self.learn_rate * self.dw[i]
-                self.b[i] = self.b[i] - self.learn_rate * self.db[i]
-
+                self.b[i] -= self.learn_rate * self.db[i]
 
 
 iris = datasets.load_iris()
@@ -224,8 +224,8 @@ x_train, x_test, y_train, y_test = train_test_split(X, y)
 y_train = oneHot[y_train]
 
 
-m = model(layerStructure=(8,3))
-m.fit(train_x=x_train, train_y=y_train, test_x=x_test, test_y=y_test, epoch=5000)
+m = model(layerStructure=[8,50,3])
+m.fit(train_x=x_train, train_y=y_train, test_x=x_test, test_y=y_test, epoch=3000)
 
 y_predict = m.forward(test_x=x_test, test_y=y_test)
 print("真实值:",y_test)
