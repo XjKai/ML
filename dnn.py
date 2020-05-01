@@ -16,8 +16,8 @@ class Model:
     """
     自定义全连接神经网络模型
     """
-    def __init__(self,learn_rate=0.03, layerStructure=[3,1],dropout_rate=None, activation_func="relu", o_activation_func="softmax",
-            loss_func="crossEntropy", regularization="L2", regularization_rate=0.03, optimizer="Adam", isInitializeWeightMatrix=True):
+    def __init__(self,learn_rate=0.005, layerStructure=[3,1],dropout_rate=None, activation_func="relu", o_activation_func="softmax",
+            loss_func="crossEntropy", regularization="L2", regularization_rate=0.0004, optimizer="RMSProp", isInitializeWeightMatrix=True):
         """
         :param learn_rate:学习率
         :param layerStructure: 网络结构，如两层结构(第一层三个神经元，第二层一个)==>[3,1]
@@ -49,6 +49,10 @@ class Model:
         self.dz = []  # dz = dL/dz = dL/da * da/dz
         self.dw = []  # dw = dL/dw = dL/dz * dz/dw
         self.db = []  # db = dL/db = dL/dz * dz/db = dL/dz
+        self.m_w, self.m_b = [], []# 一阶动量mt
+        self.V_w, self.V_b = [], []# 二阶动量Vt
+        self.beta = 0.9
+        self.beta1 = 0.999
         nd = np.random.RandomState(14)
         for n in range(len(layerStructure)):
             if n+1 < len(layerStructure):
@@ -94,6 +98,8 @@ class Model:
         :param y_true:
         :return: 损失值
         """
+        y_hat[y_hat==0] = 0.00000001   #避免出现log0
+        y_hat[y_hat==1] = 1.00000001   #避免出现log0
         if self.loss_func == "crossEntropy":
             loss = -1*np.sum(y_true*np.log(y_hat) + (1-y_true)*np.log(1-y_hat))/y_hat.shape[0]
             dz_hat = -(y_true - y_hat)
@@ -143,57 +149,51 @@ class Model:
                 for w in self.w:
                     w *= np.sqrt(1 / w.shape[0])
 
-    def __optimizer_f(self, dw, db, optimizer, learn_rate, global_step=None, beta=None, beta1=None):
+    def __optimizer_f(self, optimizer, index,  global_step=None):
         """
         梯度下降优化器
-        :param dw: w梯度
-        :param db: b梯度
         :param optimizer: 优化器
-        :param learn_rate: 学习率
         :param global_step: 全局迭代数
-        :param beta:
-        :param beta1:
         :return: 优化后的梯度
         """
-        # 一阶动量mt
-        # 二阶动量Vt
-        # 下降梯度yita = lr * mt / sqrt(Vt)
-        m_w, m_b = 0, 0
-        V_w, V_b = 1, 1
-        beta = beta if beta != None else 0.9
-        beta1 = beta1 if beta1 != None else 0.999
         if optimizer == "SGDM":
-            m_w = beta * m_w + (1 - beta) * dw
-            m_b = beta * m_b + (1 - beta) * db
-            V_w = 1
-            V_b = 1
+            self.m_w[index] = self.beta * self.m_w[index] + (1 - self.beta) * self.dw[index]
+            self.m_b[index] = self.beta * self.m_b[index] + (1 - self.beta) * self.db[index]
+            # self.V_w[index] = 1
+            # self.V_b[index] = 1
+            m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
         elif optimizer == "RMSProp":
-            m_w = dw
-            m_b = db
-            V_w = beta * V_w + (1 - beta) * np.square(dw)
-            V_b = beta * V_b + (1 - beta) * np.square(db)
+            self.m_w[index] = self.dw[index]
+            self.m_b[index] = self.db[index]
+            self.V_w[index] = self.beta * self.V_w[index] + (1 - self.beta) * np.square(self.dw[index])
+            self.V_b[index] = self.beta * self.V_b[index] + (1 - self.beta) * np.square(self.db[index])
+            m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
         elif optimizer == "Adagrad":
-            m_w = dw
-            m_b = db
-            V_w += np.square(dw)
-            V_b += np.square(db)
+            self.m_w[index] = self.dw[index]
+            self.m_b[index] = self.db[index]
+            self.V_w[index] += np.square(self.dw[index])
+            self.V_b[index] += np.square(self.db[index])
+            m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
         elif optimizer == "Adam":
-            m_w = beta * m_w + (1 - beta) * dw
-            m_b = beta * m_b + (1 - beta) * db
-            V_w = beta1 * V_w + (1 - beta1) * np.square(dw)
-            V_b = beta1 * V_b + (1 - beta1) * np.square(db)
+            self.m_w[index] = self.beta * self.m_w[index] + (1 - self.beta) * self.dw[index]
+            self.m_b[index] = self.beta * self.m_b[index] + (1 - self.beta) * self.db[index]
+            self.V_w[index] = self.beta1 * self.V_w[index] + (1 - self.beta1) * np.square(self.dw[index])
+            self.V_b[index] = self.beta1 * self.V_b[index] + (1 - self.beta1) * np.square(self.db[index])
+            m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
             # 修正后的一阶和二阶动量
-            m_w = m_w / (1 - np.power(beta, int(global_step)))
-            m_b = m_b / (1 - np.power(beta, int(global_step)))
-            V_w = V_w / (1 - np.power(beta1, int(global_step)))
-            V_b = V_b / (1 - np.power(beta1, int(global_step)))
+            m_w = m_w / (1 - np.power(self.beta, int(global_step)))
+            m_b = m_b / (1 - np.power(self.beta, int(global_step)))
+            V_w = V_w / (1 - np.power(self.beta1, int(global_step)))
+            V_b = V_b / (1 - np.power(self.beta1, int(global_step)))
         else:  # SGD
-            m_w = dw
-            m_b = db
-            V_w = 1
-            V_b = 1
-        yita_w = learn_rate * (m_w / np.sqrt(V_w))
-        yita_b = learn_rate * (m_b / np.sqrt(V_b))
+            self.m_w[index] = self.dw[index]
+            self.m_b[index] = self.db[index]
+            # self.V_w[index] = 1
+            # self.V_b[index] = 1
+            m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
+        # 下降梯度yita = lr * mt / sqrt(Vt)
+        yita_w = self.learn_rate * (m_w / np.sqrt(V_w))
+        yita_b = self.learn_rate * (m_b / np.sqrt(V_b))
         return yita_w, yita_b
 
     def __grad_check_f(self, x, y):
@@ -238,6 +238,8 @@ class Model:
         nd = np.random.RandomState(14)
         self.w.insert(0,nd.rand(train_x.shape[1], self.layerStructure[0])*0.01)  # 添加第一层网络的训练参数w
         self.__initializeWeightMatrix_f()       #初始化权重矩阵
+        self.m_w, self.m_b = [np.zeros(m_w.shape) for m_w in self.w], [np.zeros(m_b.shape) for m_b in self.b]# 初始化一阶动量mt
+        self.V_w, self.V_b = [np.ones(v_w.shape) for v_w in self.w], [np.ones(v_b.shape) for v_b in self.b]# 初始化二阶动量Vt
         global_step = 0
 
         for epoch in range(epochs):      # 训练轮数
@@ -300,19 +302,17 @@ class Model:
                     self.db.insert(0, np.sum(self.dz[0], axis=0, keepdims=True) / m_mini_batch)
 
                 # ###参数更新###
-                for i in range(self.dw.__len__()):
+                for i in range(len(self.dw)):
                     self.__regularization_f(m_mini_batch) #正则化
-                    yita_w, yita_b = self.__optimizer_f(dw=self.dw[i], db=self.db[i], optimizer=self.optimizer,
-                                                    learn_rate=self.learn_rate, global_step=global_step)
+                    yita_w, yita_b = self.__optimizer_f(optimizer=self.optimizer, index=i, global_step=global_step)
                     self.w[i] -= yita_w
                     self.b[i] -= yita_b
 
-            print("epoch={}  loss={}".format(epoch, str(self.loss[-1])))
+            print("epoch={}  train_loss={}".format(epoch, str(self.loss[-1])))
 
 if __name__ == '__main__':
     # mnist数据集
-    mnist = tf.keras.datasets.mnist
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
     x_train, y_train = dp.dataP(x_train, y_train, oneHot_num=10)
     x_test, y_test = dp.dataP(x_test, y_test)
 
@@ -327,7 +327,7 @@ if __name__ == '__main__':
 
     # 训练模型
     m = Model(layerStructure=[128, 10])
-    m.fit(train_x=x_train, train_y=y_train, test_x=x_test, test_y=y_test, batch_size=32, epochs=50)
+    m.fit(train_x=x_train, train_y=y_train, test_x=x_test, test_y=y_test, batch_size=32, epochs=10)
 
     # 用训练的模型进行预测
     y_predict = m.forward(test_x=x_test, test_y=y_test)
