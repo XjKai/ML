@@ -11,13 +11,14 @@ from sklearn.model_selection import train_test_split
 from matplotlib import pyplot as plt
 import tensorflow as tf
 import dataProcess as dp
+import time
 
 class Model:
     """
     自定义全连接神经网络模型
     """
-    def __init__(self,learn_rate=0.005, layerStructure=[3,1],dropout_rate=None, activation_func="relu", o_activation_func="softmax",
-            loss_func="crossEntropy", regularization="L2", regularization_rate=0.0004, optimizer="RMSProp", isInitializeWeightMatrix=True):
+    def __init__(self,learn_rate=0.08, layerStructure=[3,1],dropout_rate=None, activation_func="relu", o_activation_func="softmax",
+            loss_func="crossEntropy", regularization="L2", regularization_rate=0.0004, optimizer="Adam", isInitializeWeightMatrix=True):
         """
         :param learn_rate:学习率
         :param layerStructure: 网络结构，如两层结构(第一层三个神经元，第二层一个)==>[3,1]
@@ -30,15 +31,16 @@ class Model:
         :param isInitializeWeightMatrix: 是否初始化权重矩阵
         """
         self.loss = []
+        self.test_accuracy = []
         self.layers_num = len(layerStructure)
         self.dropout_rate = dropout_rate if dropout_rate else [0]*self.layers_num
-        self.learn_rate = learn_rate
-        self.layerStructure = layerStructure
+        self.learn_rate = learn_rate                            #hyperparameter
+        self.layerStructure = layerStructure                    #hyperparameter
         self.activation_func = activation_func
         self.o_activation_func = o_activation_func
         self.loss_func = loss_func
         self.regularization = regularization
-        self.regularization_rate = regularization_rate
+        self.regularization_rate = regularization_rate          #hyperparameter
         self.optimizer = optimizer
         self.isInitializeWeightMatrix = isInitializeWeightMatrix
         self.w = []   # 训练参数
@@ -51,8 +53,8 @@ class Model:
         self.db = []  # db = dL/db = dL/dz * dz/db = dL/dz
         self.m_w, self.m_b = [], []# 一阶动量mt
         self.V_w, self.V_b = [], []# 二阶动量Vt
-        self.beta = 0.9
-        self.beta1 = 0.999
+        self.beta = 0.9        #hyperparameter
+        self.beta1 = 0.999     #hyperparameter
         nd = np.random.RandomState(14)
         for n in range(len(layerStructure)):
             if n+1 < len(layerStructure):
@@ -69,7 +71,6 @@ class Model:
         a = z
         # 根据dropout概率随机决定该层哪些神经元需要dropout
         d = np.random.rand(z.shape[0], z.shape[1]) >= dropout
-
         if activation.lower() == "relu":
             a[a < 0] = 0
             dg = a.copy()
@@ -98,8 +99,9 @@ class Model:
         :param y_true:
         :return: 损失值
         """
-        y_hat[y_hat==0] = 0.00000001   #避免出现log0
-        y_hat[y_hat==1] = 1.00000001   #避免出现log0
+        alpha = 0.000000001
+        y_hat[y_hat==0] += alpha         #避免出现log0
+        y_hat[y_hat==1] += (1 + alpha)   #避免出现log0
         if self.loss_func == "crossEntropy":
             loss = -1*np.sum(y_true*np.log(y_hat) + (1-y_true)*np.log(1-y_hat))/y_hat.shape[0]
             dz_hat = -(y_true - y_hat)
@@ -149,13 +151,14 @@ class Model:
                 for w in self.w:
                     w *= np.sqrt(1 / w.shape[0])
 
-    def __optimizer_f(self, optimizer, index,  global_step=None):
+    def __optimizer_f(self, learn_rate, optimizer, index,  global_step=None):
         """
         梯度下降优化器
         :param optimizer: 优化器
         :param global_step: 全局迭代数
         :return: 优化后的梯度
         """
+        alpha = 0.000000001
         if optimizer == "SGDM":
             self.m_w[index] = self.beta * self.m_w[index] + (1 - self.beta) * self.dw[index]
             self.m_b[index] = self.beta * self.m_b[index] + (1 - self.beta) * self.db[index]
@@ -181,10 +184,10 @@ class Model:
             self.V_b[index] = self.beta1 * self.V_b[index] + (1 - self.beta1) * np.square(self.db[index])
             m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
             # 修正后的一阶和二阶动量
-            m_w = m_w / (1 - np.power(self.beta, int(global_step)))
-            m_b = m_b / (1 - np.power(self.beta, int(global_step)))
-            V_w = V_w / (1 - np.power(self.beta1, int(global_step)))
-            V_b = V_b / (1 - np.power(self.beta1, int(global_step)))
+            m_w = m_w / ((1 - np.power(self.beta, int(global_step))) + alpha)
+            m_b = m_b / ((1 - np.power(self.beta, int(global_step))) + alpha)
+            V_w = V_w / ((1 - np.power(self.beta1, int(global_step))) + alpha)
+            V_b = V_b / ((1 - np.power(self.beta1, int(global_step))) + alpha)
         else:  # SGD
             self.m_w[index] = self.dw[index]
             self.m_b[index] = self.db[index]
@@ -192,9 +195,18 @@ class Model:
             # self.V_b[index] = 1
             m_w, m_b, V_w, V_b = self.m_w[index], self.m_b[index], self.V_w[index], self.V_b[index]
         # 下降梯度yita = lr * mt / sqrt(Vt)
-        yita_w = self.learn_rate * (m_w / np.sqrt(V_w))
-        yita_b = self.learn_rate * (m_b / np.sqrt(V_b))
+        yita_w = learn_rate * (m_w / np.sqrt(V_w))
+        yita_b = learn_rate * (m_b / np.sqrt(V_b))
         return yita_w, yita_b
+
+    def __learning_rate_decay(self, epoch_num):
+        """
+        学习率衰减
+        :param epoch_num:
+        :return:
+        """
+        decay_rate = 0.6  #衰减系数
+        return (1 / (1 + decay_rate * epoch_num)) * self.learn_rate
 
     def __grad_check_f(self, x, y):
         pass
@@ -223,6 +235,20 @@ class Model:
             a.append(aa["a"])
         return a[-1]
 
+    def test_validation(self, test_x, test_y):
+        """
+        测试集验证
+        :param test_x:
+        :param test_y:
+        :return:
+        """
+        y_predict = self.forward(test_x=test_x, test_y=test_y)
+        rs = []
+        for i in range(y_predict.shape[0]):
+            rs.append(np.argmax(y_predict[i]))
+        rs = np.asarray(rs).reshape(len(rs), 1)
+        return sum(test_y == rs) / len(test_y)
+
     def fit(self, train_x, train_y, test_x, test_y, batch_size=None, epochs=1):
         """
         训练函数
@@ -242,7 +268,10 @@ class Model:
         self.V_w, self.V_b = [np.ones(v_w.shape) for v_w in self.w], [np.ones(v_b.shape) for v_b in self.b]# 初始化二阶动量Vt
         global_step = 0
 
+        print("TrainSample : {}  TestSample : {}".format(train_x.shape[0], test_x.shape[0]))
+
         for epoch in range(epochs):      # 训练轮数
+            time_s = time.time()
             batch_count = 0
             front = 0
             rear = 0
@@ -286,10 +315,8 @@ class Model:
                     self.a.append(aa["a"])
                     self.dg.append(aa["dg"])
 
-                # ###后向传播###
+                # ###反向传播###
                 loss = self.__loss_f(y_hat=self.a[-1],y_true=ty)
-                #print(loss["loss"])
-                self.loss.append(loss["loss"])
                 self.dz.insert(0, loss["dz_hat"])
                 self.dw.insert(0, np.dot(self.a[-2].T, self.dz[0]) / m_mini_batch)
                 self.db.insert(0, np.sum(self.dz[0], axis=0, keepdims=True) / m_mini_batch)
@@ -304,15 +331,20 @@ class Model:
                 # ###参数更新###
                 for i in range(len(self.dw)):
                     self.__regularization_f(m_mini_batch) #正则化
-                    yita_w, yita_b = self.__optimizer_f(optimizer=self.optimizer, index=i, global_step=global_step)
+                    yita_w, yita_b = self.__optimizer_f(learn_rate=self.__learning_rate_decay(epoch), optimizer=self.optimizer, index=i, global_step=global_step)
                     self.w[i] -= yita_w
                     self.b[i] -= yita_b
 
-            print("epoch={}  train_loss={}".format(epoch, str(self.loss[-1])))
+            time_u = time.time() - time_s
+            test_accuracy = self.test_validation(test_x, test_y)
+            self.loss.append(loss["loss"])
+            self.test_accuracy.append(test_accuracy)
+            print("epoch_num: {:0>3d}   train_loss: {:0<.5f}   test_accuracy: {:0<.5f}   use_time: {:0<.5f}min".format(epoch, self.loss[-1], test_accuracy[0], time_u/60))
+
 
 if __name__ == '__main__':
     # mnist数据集
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
+    (x_train, y_train), (x_test, y_test) =tf.keras.datasets.mnist.load_data()# tf.keras.datasets.cifar10.load_data()
     x_train, y_train = dp.dataP(x_train, y_train, oneHot_num=10)
     x_test, y_test = dp.dataP(x_test, y_test)
 
@@ -330,19 +362,25 @@ if __name__ == '__main__':
     m.fit(train_x=x_train, train_y=y_train, test_x=x_test, test_y=y_test, batch_size=32, epochs=10)
 
     # 用训练的模型进行预测
-    y_predict = m.forward(test_x=x_test, test_y=y_test)
-    rs = []
-    for i in range(y_predict.shape[0]):
-        rs.append(np.argmax(y_predict[i]))
-    rs = np.asarray(rs).reshape(len(rs),1)
-    print("真实值:", y_test)
-    print("预测值:", rs)
-    print("准确率:", sum(y_test == rs) / len(y_test))
+    # y_predict = m.forward(test_x=x_test, test_y=y_test)
+    # rs = []
+    # for i in range(y_predict.shape[0]):
+    #     rs.append(np.argmax(y_predict[i]))
+    # rs = np.asarray(rs).reshape(len(rs),1)
+    # print("真实值:", y_test)
+    # print("预测值:", rs)
+    # print("准确率:", sum(y_test == rs) / len(y_test))
 
     # 绘出loss曲线
-    plt.title("loss")
-    plt.xlabel("num")
+    plt.title("train_loss")
+    plt.xlabel("epoch_num")
     plt.ylabel("loss")
     plt.plot(m.loss, label= "$Loss$")
+    plt.legend()
+    # 绘出accuracy曲线
+    plt.title("test_accuracy")
+    plt.xlabel("epoch_num")
+    plt.ylabel("accuracy")
+    plt.plot(m.test_accuracy, label= "Accuracy")
     plt.legend()
     plt.show()
